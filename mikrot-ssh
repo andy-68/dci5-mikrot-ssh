@@ -1,0 +1,303 @@
+#!/usr/bin/python2.7
+#coding=utf8
+
+import paramiko 
+import sys
+import os
+import xml.etree.ElementTree as xmlET
+
+#port = 22
+syskey = "/usr/local/mgr5/var/modules_ssh_keys/keys_dci"
+
+def xpath_result( root, xpath ):
+    res = root.findall( xpath )
+    if len( res ) == 1:
+	return res[0].text
+    else:
+	return ""
+
+def ExecuteCmd (cmd):
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if(secret.startswith('-key')):
+            keyfile=parameterSplit(secret)
+            if keyfile=="":
+                keyfile=syskey
+            key = paramiko.RSAKey.from_private_key_file(keyfile)
+            client.connect(host, username=user, pkey=key)
+        else:
+            client.connect(host, username=user, password=secret, look_for_keys=False)
+        stdin, stdout, stderr = client.exec_command(cmd)
+        out=[line for line in stdout]
+        client.close()
+        return out
+    except:
+        print ("<doc><error><type>connection</type>")
+        print ("<text>Failed to open connection to " +host+"</text></error></doc>\n")
+        quit()
+
+def parameterSplit (str):
+    el=str.split('=')
+    if(len(el) > 1):
+        return el[1]
+    else:
+        return ''
+
+def GetPortsStatus (portType):
+    devReply=ExecuteCmd("/int " + portType + " print terse")
+    
+    output=""
+
+    for line in devReply:
+        output+=DecodePortPrintInfo(line)
+
+    return output
+
+
+def DecodePortPrintInfo(line):
+    out=""
+    elements=line.lstrip().split(' ')
+    if len(elements) > 18:
+        if(elements[1]==""):
+            if(elements[2].startswith('R')):
+                operStatus='on'
+                adminStatus='on'
+    	    elif(elements[2].startswith('X')):
+	        operStatus='off'
+	        adminStatus='off'
+	    else:
+                operStatus='off'
+                adminStatus='on'
+	else:
+	    if(elements[1].startswith('R')):
+                operStatus='on'
+                adminStatus='on'
+    	    elif(elements[1].startswith('X')):
+	        operStatus='off'
+	        adminStatus='off'
+	    else:
+                operStatus='off'
+                adminStatus='on'
+
+        descr=""
+        port=""
+        name=""
+        speed="auto"
+        duplex="auto"
+        auto=0
+        advert=""
+
+        for element in elements:
+            if(element.startswith('name=')):
+                name=parameterSplit(element)
+            elif(element.startswith('default-name=')):
+                port=parameterSplit(element)
+            elif(element.startswith('comment=')):
+                descr=parameterSplit(element)
+            elif(element.startswith('auto-negotiation=yes')):
+                auto=1
+            elif(element.startswith('full-duplex=yes')):
+                duplex="full"
+            elif(element.startswith('speed=')):
+                speed=parameterSplit(element).lower()
+            elif(element.startswith('advertise=')):
+                advert=parameterSplit(element).lower()
+
+	if(port==""):
+	    port=name
+
+
+        s10m=""
+        s100m=""
+        s1g=""
+        dhalf=""
+        dfull=""
+
+        if(auto==1):
+            duplex="auto"
+            if(advert!=""):
+                adverts=advert.lstrip().split(",")
+                for adv in adverts:
+                    if adv == "10m-half":
+                        s10m=1
+                        dhalf=1
+                    if adv == "10m-full":
+                        s10m=1
+                        dfull=1
+                    if adv == "100m-half":
+                        s100m=1
+                        dhalf=1
+                    if adv == "100m-full":
+                        s100m=1
+                        dfull=1
+                    if adv == "1000m-half":
+                        s1g=1
+                        dhalf=1
+                    if adv == "1000m-full":
+                        s1g=1
+                        dfull=1
+
+                if s10m==1 and s100m==1 and s1g==1:
+                    speed='auto'
+                elif s10m==1 and s100m==1:
+                    speed='auto10100'
+                elif s10m==1:
+                    speed='10mbps'
+
+            else:
+                speed="auto"
+
+        out += "<port>"
+	out += "<identity>" + port + "</identity>"
+	out += "<description>" + name + "</description>"
+	out += "<admin_status>" + adminStatus + "</admin_status>"
+	out += "<oper_status>" + operStatus + "</oper_status>"
+	out += "<duplex>" + duplex + "</duplex>"
+	out += "<speed>" + speed + "</speed>"
+        if port in macTable:
+            for mac in (macTable[port]):
+                out += "<mac>" + mac + "</mac>"
+	out += "</port>"
+        out += "\n"
+
+    return(out)
+
+
+def SetPortStatus (port,status):
+    output=""
+    if port=="":
+        return output
+
+    cmd="ena"
+
+    if status=="off":
+        cmd="dis"
+
+    ExecuteCmd("/int eth " + cmd + " [ find where default-name="+port+" ]")
+    devReply= ExecuteCmd("/int eth print terse where default-name="+port)
+    for line in devReply:
+        output+=DecodePortPrintInfo(line)
+
+    return output
+
+def SetPortSpeed (port,speed):
+    output=""
+    if port=="":
+        return output
+    if speed=='auto':
+        advert='10M-half,10M-full,100M-half,100M-full,1000M-half,1000M-full'
+        auto='yes'
+        sspeed='1Gbps'
+    elif speed=='auto10100':
+        advert='10M-half,10M-full,100M-half,100M-full'
+        auto='yes'
+        sspeed='100Mbps'
+    elif speed=='10mbps':
+        advert='10M-half,10M-full,100M-half,100M-full,1000M-half,1000M-full'
+        auto='no'
+        sspeed='10Mbps'
+    elif speed=='100mbps':
+        advert='10M-half,10M-full,100M-half,100M-full,1000M-half,1000M-full'
+        auto='no'
+        sspeed='100Mbps'
+    elif speed=='1gbps':
+        advert='10M-half,10M-full,100M-half,100M-full,1000M-half,1000M-full'
+        auto='no'
+        sspeed='1Gbps'
+    elif speed=='10gbps':
+        advert='10M-half,10M-full,100M-half,100M-full,1000M-half,1000M-full'
+        auto='no'
+        sspeed='10Gbps'
+
+    ExecuteCmd("/int eth set [ find where default-name="+port+" ] auto-negotiation="+auto+" advertise="+advert+" speed="+sspeed)
+    devReply= ExecuteCmd("/int eth print terse where default-name="+port)
+    for line in devReply:
+        output+=DecodePortPrintInfo(line)
+
+    return output
+
+def SetPortDuplex (port,duplex):
+    output=""
+    if port=="":
+        return output
+
+    full="no"
+
+    if duplex=="full" or duplex=="auto":
+        full="yes"
+
+    ExecuteCmd("/int eth set [ find where default-name="+port+" ] full-duplex="+full)
+    devReply= ExecuteCmd("/int eth print terse where default-name="+port)
+    for line in devReply:
+        output+=DecodePortPrintInfo(line)
+
+    return output
+
+
+def GetMacTable(portType):
+    devReply= ExecuteCmd("/int bridge host print terse")
+    for line in devReply:
+        elements=line.lstrip().split(' ')
+        if len(elements) > 8:
+            if(elements[4]=="E"):
+                mac=parameterSplit(elements[5])
+                port=parameterSplit(elements[7])
+                if not port in macTable:
+                    macTable[port]=list()
+                macTable[port].append(mac)
+    return
+
+
+#--- main ----
+if len(sys.argv) > 1 and sys.argv[1] == "-info":
+    reply = "<type>Switch</type>" 
+    reply += "<name>Mikrotik SSH v0.00.002</name>"
+    reply += "<requirements>"
+    reply += "<ssh/>"
+    reply += "</requirements>"
+    reply += "<supported_funcs>"
+    reply += "<status/>"
+    reply += "<port_off/>"
+    reply += "<port_on/>"
+    reply += "<port_duplex/>"
+    reply += "<port_speed/>"
+    reply += "<mac_list/>"
+    reply += "</supported_funcs>"
+else:
+    request=sys.stdin.read()
+
+    xmlRoot = xmlET.fromstring(request)
+    global user 
+    global secret 
+    global host 
+    user = xpath_result(xmlRoot, "./device_params/ssh_user")
+    secret = xpath_result(xmlRoot, "./device_params/ssh_pass")
+    host = xpath_result(xmlRoot, "./device_params/ip")
+    func = xpath_result(xmlRoot, "./func")
+    port = xpath_result(xmlRoot, "./port/identity")
+
+    global macTable
+    macTable={}
+
+
+    if func == "status":
+#        GetMacTable("eth")
+        reply=GetPortsStatus("eth")
+        reply+=GetPortsStatus("bon")
+    elif func == "mac_list":
+        GetMacTable("eth")
+        reply=GetPortsStatus("eth")
+        reply+=GetPortsStatus("bon")
+    elif func == "port_off":
+        reply = SetPortStatus (port,"off")
+    elif func == "port_on":
+        reply = SetPortStatus (port,"on")
+    elif func == "port_speed":
+        speed =  xpath_result(xmlRoot, "./port/speed")
+        reply = SetPortSpeed (port,speed)
+    elif func == "port_duplex":
+        duplex =  xpath_result(xmlRoot, "./port/duplex")
+        reply = SetPortDuplex (port,duplex)
+
+print("<doc>" + reply + "</doc>")
